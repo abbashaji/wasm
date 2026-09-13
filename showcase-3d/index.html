@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<!--
+  showcase-3d/index.html
+
+  A real 3D showcase for @anthroforge/web, added because the shipped
+  packages/web/demo/index.html only draws a flat 2D wireframe canvas of a
+  single-triangle placeholder fixture.
+
+  What's real here: this renders the actual, real output of generate()
+  (positions/normals/uvs/indices) for a real rigged character — the head
+  and body meshes of KayKit's CC0 "Adventurers" Knight
+  (github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0,
+  CC0 license, see KAYKIT-LICENSE.txt) — extracted from the original glTF
+  into two AnthroForge "parts" (1001_head.glb, 2001_body.glb) sharing the
+  Knight's real 41-bone skin, packed into kaykit_character.afpp. This was
+  verified directly against the real, unmodified anthroforge_core.wasm
+  (via a Node script, not this browser page) before this page was
+  written: init() + generate() with headId=1001/torsoId=2001 produced a
+  real non-null mesh (3716 vertices, 12444 indices).
+
+  What this does NOT do: true skinned/posed rendering via
+  @anthroforge/web-three's toSkinnedMesh(). getSkeleton() is declared in
+  packages/web/src/index.ts but the *shipped* dist/anthroforge_core.wasm
+  in this zip predates that work — it has no get_skeleton/
+  free_skeleton_buffer export (checked directly via
+  WebAssembly.Module.exports; 14 exports, not the 17 PROJECT_STATE.md
+  describes). So this page renders the real mesh in its authored bind
+  pose as a static (non-skinned) THREE.Mesh with the real UVs and the
+  real knight_texture.png applied — a genuine, textured, lit, orbitable
+  3D render, just not an animated one. Getting skeletal
+  posing/animation working needs rebuilding anthroforge_core.wasm from
+  rust-core/ with a real Rust toolchain, which was not available in the
+  environment that assembled this page.
+
+  Serve with e.g. `npx serve .` or `python3 -m http.server` from the
+  project root (needs http(s):// for fetch() to reach the .wasm/.afpp/
+  texture files).
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>AnthroForge — 3D character showcase (real KayKit mesh)</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #14151a;
+    color: #e8e8ec;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 { font-size: 1.2rem; font-weight: 600; margin: 0 0 4px; }
+  p.sub { color: #9a9aa5; margin: 0 0 20px; font-size: 0.9rem; max-width: 640px; }
+  .layout { display: flex; gap: 24px; flex-wrap: wrap; }
+  #canvas-wrap {
+    background: #1c1d24;
+    border: 1px solid #2c2d36;
+    border-radius: 8px;
+    width: 600px;
+    height: 600px;
+    position: relative;
+  }
+  canvas { display: block; border-radius: 8px; }
+  .panel { min-width: 260px; }
+  .control { margin-bottom: 16px; }
+  .control label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: #c4c4cc;
+    margin-bottom: 6px;
+  }
+  input[type="range"] { width: 100%; }
+  button {
+    background: #5b5bf0;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  button:hover { background: #4a4adf; }
+  button:disabled { background: #3a3a45; cursor: not-allowed; }
+  .stats {
+    margin-top: 18px;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #c4c4cc;
+  }
+  .stats span { color: #e8e8ec; font-variant-numeric: tabular-nums; }
+  .status-error {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: #3a1a1e;
+    color: #ff8a8a;
+    font-size: 0.85rem;
+    display: none;
+    word-break: break-word;
+  }
+  .status-error.visible { display: block; }
+  .badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    color: #9a9aa5;
+    border: 1px solid #2c2d36;
+    border-radius: 999px;
+    padding: 2px 10px;
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>AnthroForge — real 3D character showcase</h1>
+<p class="sub">
+  A real, textured, lit, orbit-controllable render of a real rigged
+  character (KayKit's Knight, CC0) run through AnthroForge's actual
+  wasm <code>generate()</code> pipeline. Static bind pose — see the
+  comment at the top of this file's source for why it isn't animated.
+</p>
+
+<div class="layout">
+  <div id="canvas-wrap"></div>
+
+  <div class="panel">
+    <div class="control">
+      <label>Height modifier <span id="heightVal">1.00</span></label>
+      <input type="range" id="heightSlider" min="0.7" max="1.3" step="0.01" value="1.0" />
+    </div>
+    <div class="control">
+      <label>Weight modifier <span id="weightVal">1.00</span></label>
+      <input type="range" id="weightSlider" min="0.7" max="1.3" step="0.01" value="1.0" />
+    </div>
+
+    <button id="generateBtn">Generate</button>
+
+    <div class="stats">
+      <div>Generation time: <span id="statTime">—</span></div>
+      <div>Vertices: <span id="statVerts">—</span></div>
+      <div>Triangles: <span id="statTris">—</span></div>
+    </div>
+
+    <div class="status-error" id="statusError"></div>
+
+    <div class="badge">Mesh + texture: KayKit Adventurers (CC0)</div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+  import * as THREE from "three";
+  import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+  import { init, generate, getLastError } from "../packages/web/dist/index.js";
+
+  const PACK_URL = new URL("./kaykit_character.afpp", import.meta.url).href;
+  const TEXTURE_URL = new URL("./knight_texture.png", import.meta.url).href;
+
+  // Confirmed against the live wasm module (see the file-header comment):
+  // 1001 = the Knight's head part, 2001 = every other body part
+  // (arms/torso/legs) merged into one part sharing the same 41-bone skin.
+  const HEAD_ID = 1001;
+  const BODY_ID = 2001;
+
+  const wrap = document.getElementById("canvas-wrap");
+  const heightSlider = document.getElementById("heightSlider");
+  const weightSlider = document.getElementById("weightSlider");
+  const heightVal = document.getElementById("heightVal");
+  const weightVal = document.getElementById("weightVal");
+  const generateBtn = document.getElementById("generateBtn");
+  const statTime = document.getElementById("statTime");
+  const statVerts = document.getElementById("statVerts");
+  const statTris = document.getElementById("statTris");
+  const statusError = document.getElementById("statusError");
+
+  function showError(message) {
+    statusError.textContent = message;
+    statusError.classList.add("visible");
+  }
+  function clearError() {
+    statusError.textContent = "";
+    statusError.classList.remove("visible");
+  }
+
+  heightSlider.addEventListener("input", () => { heightVal.textContent = Number(heightSlider.value).toFixed(2); });
+  weightSlider.addEventListener("input", () => { weightVal.textContent = Number(weightSlider.value).toFixed(2); });
+
+  // ---- three.js scene setup (runs once) ----
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(600, 600);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  wrap.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1c1d24);
+
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+  camera.position.set(0, 1.4, 3.2);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 1.0, 0);
+  controls.enableDamping = true;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
+  keyLight.position.set(2, 4, 3);
+  scene.add(keyLight);
+  const rimLight = new THREE.DirectionalLight(0x99aaff, 0.5);
+  rimLight.position.set(-3, 2, -2);
+  scene.add(rimLight);
+
+  const grid = new THREE.GridHelper(4, 16, 0x33344a, 0x24253a);
+  scene.add(grid);
+
+  const texture = new THREE.TextureLoader().load(TEXTURE_URL);
+  texture.flipY = false; // raw glTF UVs, passed through generate() unmodified
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.8, metalness: 0.05 });
+
+  let mesh = null;
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  let initPromise = null;
+
+  async function onGenerate() {
+    generateBtn.disabled = true;
+    clearError();
+    try {
+      if (!initPromise) {
+        initPromise = init({ partPackUrl: PACK_URL, licenseKey: "" });
+      }
+      await initPromise;
+
+      const dna = {
+        seed: BigInt(Math.floor(Math.random() * 1_000_000_000)),
+        heightModifier: Number(heightSlider.value),
+        weightModifier: Number(weightSlider.value),
+        headId: HEAD_ID,
+        torsoId: BODY_ID,
+        clothingIds: [],
+      };
+
+      const t0 = performance.now();
+      const result = generate(dna);
+      const t1 = performance.now();
+
+      if (result === null) {
+        showError(getLastError() ?? "generate() returned null with no error message");
+        statTime.textContent = `${(t1 - t0).toFixed(2)} ms (failed)`;
+        return;
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(result.positions, 3));
+      geometry.setAttribute("normal", new THREE.BufferAttribute(result.normals, 3));
+      geometry.setAttribute("uv", new THREE.BufferAttribute(result.uvs, 2));
+      geometry.setIndex(new THREE.BufferAttribute(result.indices, 1));
+
+      if (mesh) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+      }
+      mesh = new THREE.Mesh(geometry, material);
+      // No rotation needed: checked the source glTF's own joint
+      // translations directly (hips -> spine -> chest -> head all stack
+      // upward along +Y), confirming it's already authored Y-up, which
+      // matches three.js's convention.
+      scene.add(mesh);
+
+      statTime.textContent = `${(t1 - t0).toFixed(2)} ms`;
+      statVerts.textContent = String(result.positions.length / 3);
+      statTris.textContent = String(result.indices.length / 3);
+    } catch (err) {
+      showError(`Unexpected error: ${err?.message ?? err}`);
+    } finally {
+      generateBtn.disabled = false;
+    }
+  }
+
+  generateBtn.addEventListener("click", onGenerate);
+  onGenerate(); // render once on load
+</script>
+
+</body>
+</html>

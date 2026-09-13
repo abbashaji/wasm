@@ -1,0 +1,13 @@
+# Sets the getrandom backend for wasm32-unknown-unknown at the project
+# level, so `cargo build --target wasm32-unknown-unknown` picks it up
+# automatically instead of relying on a RUSTFLAGS environment variable
+# someone has to remember to set every session.
+#
+# Must match the feature enabled on the `getrandom` dependency in
+# Cargo.toml's `[target.'cfg(target_arch = "wasm32")'.dependencies]`
+# section — currently "custom" (see that file's comment for why, and
+# lib.rs for the `__getrandom_v03_custom` implementation this cfg wires
+# up). If that feature ever changes back to "wasm_js", this must change
+# to match: --cfg getrandom_backend="wasm_js".
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']

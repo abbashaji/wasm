@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<!--
+  packages/web/demo/index.html
+
+  Minimal interactive demo for @anthroforge/web, per
+  TASK-PHASE3-PART-C, §Part 2.
+
+  STATUS: opened and click-tested for real on 2026-09-13 (via a
+  Playwright-driven real Chromium instance against a real static server,
+  the real built dist/, the real anthroforge_core.wasm, and the real
+  real_test.afpp). Two Generate clicks with different slider values both
+  rendered a real wireframe with real timing/vertex/index numbers, and
+  forcing an invalid heightModifier through the actual UI surfaced a
+  real error message in the status banner. See PHASE_3_MERGE_NOTES.md
+  for the full report and a screenshot description.
+
+  Serve with e.g. `npx serve .` or `python -m http.server` from
+  packages/web/demo/ (it needs http(s):// or file:// fetch access to
+  the real .wasm and .afpp files, so don't just double-click it if
+  your browser blocks fetch() from file://).
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>AnthroForge — Character Generation Demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #14151a;
+    color: #e8e8ec;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 { font-size: 1.2rem; font-weight: 600; margin: 0 0 4px; }
+  p.sub { color: #9a9aa5; margin: 0 0 20px; font-size: 0.9rem; }
+  .layout { display: flex; gap: 24px; flex-wrap: wrap; }
+  canvas {
+    background: #1c1d24;
+    border: 1px solid #2c2d36;
+    border-radius: 8px;
+  }
+  .panel { min-width: 260px; }
+  .control { margin-bottom: 16px; }
+  .control label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: #c4c4cc;
+    margin-bottom: 6px;
+  }
+  input[type="range"] { width: 100%; }
+  button {
+    background: #5b5bf0;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  button:hover { background: #4a4adf; }
+  button:disabled { background: #3a3a45; cursor: not-allowed; }
+  .stats {
+    margin-top: 18px;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #c4c4cc;
+  }
+  .stats span { color: #e8e8ec; font-variant-numeric: tabular-nums; }
+  .status-error {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: #3a1a1e;
+    color: #ff8a8a;
+    font-size: 0.85rem;
+    display: none;
+    word-break: break-word;
+  }
+  .status-error.visible { display: block; }
+</style>
+</head>
+<body>
+
+<h1>AnthroForge Web — generation demo</h1>
+<p class="sub">Adjust the sliders, click Generate, and watch the wireframe + real timing numbers update.</p>
+
+<div class="layout">
+  <canvas id="canvas" width="480" height="480"></canvas>
+
+  <div class="panel">
+    <div class="control">
+      <label>Height modifier <span id="heightVal">1.00</span></label>
+      <input type="range" id="heightSlider" min="0.5" max="1.5" step="0.01" value="1.0" />
+    </div>
+    <div class="control">
+      <label>Weight modifier <span id="weightVal">1.00</span></label>
+      <input type="range" id="weightSlider" min="0.5" max="1.5" step="0.01" value="1.0" />
+    </div>
+
+    <button id="generateBtn">Generate</button>
+
+    <div class="stats">
+      <div>Generation time: <span id="statTime">—</span></div>
+      <div>Vertices: <span id="statVerts">—</span></div>
+      <div>Indices: <span id="statIndices">—</span></div>
+    </div>
+
+    <div class="status-error" id="statusError"></div>
+  </div>
+</div>
+
+<script type="module">
+  // "@anthroforge/web" is not published and there's no workspace set up
+  // to resolve that bare specifier from a plain static file server, so
+  // this imports the real built output directly (see PHASE_3_MERGE_NOTES.md).
+  import { init, generate, getLastError } from "../dist/index.js";
+
+  const PART_PACK_URL = new URL("../../../real_test.afpp", import.meta.url).href;
+  const LICENSE_KEY = ""; // fill in a real license key to actually run this
+
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  const heightSlider = document.getElementById("heightSlider");
+  const weightSlider = document.getElementById("weightSlider");
+  const heightVal = document.getElementById("heightVal");
+  const weightVal = document.getElementById("weightVal");
+  const generateBtn = document.getElementById("generateBtn");
+  const statTime = document.getElementById("statTime");
+  const statVerts = document.getElementById("statVerts");
+  const statIndices = document.getElementById("statIndices");
+  const statusError = document.getElementById("statusError");
+
+  // Real part ids present in real_test.afpp. Corrected during the Phase 3
+  // merge: Part C's original draft guessed HEAD_ID=2001/TORSO_ID=1001,
+  // but Part A's index.test.mjs empirically confirmed the real mapping
+  // against the live wasm module is headId=1001, torsoId=2001 (the
+  // reverse). See PHASE_3_MERGE_NOTES.md.
+  const HEAD_ID = 1001;
+  const TORSO_ID = 2001;
+
+  let initPromise = null; // cached — init() is only called once, on first Generate click
+
+  function showError(message) {
+    statusError.textContent = message;
+    statusError.classList.add("visible");
+  }
+
+  function clearError() {
+    statusError.textContent = "";
+    statusError.classList.remove("visible");
+  }
+
+  heightSlider.addEventListener("input", () => {
+    heightVal.textContent = Number(heightSlider.value).toFixed(2);
+  });
+  weightSlider.addEventListener("input", () => {
+    weightVal.textContent = Number(weightSlider.value).toFixed(2);
+  });
+
+  // positions/indices are the confirmed real field names on
+  // GeneratedCharacter (see src/index.ts). The extra fallbacks are kept
+  // only as harmless defense against a future field rename.
+  function readMesh(result) {
+    const positions = result.positions ?? result.vertexPositions ?? result.vertices;
+    const indices = result.indices;
+    return { positions, indices };
+  }
+
+  function drawWireframe(positions, indices) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Find bounds for a simple fit-to-canvas projection (x/y only,
+    // z ignored per spec).
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = positions[i];
+      const y = positions[i + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    const spanX = Math.max(maxX - minX, 1e-6);
+    const spanY = Math.max(maxY - minY, 1e-6);
+    const scale = 0.8 * Math.min(canvas.width / spanX, canvas.height / spanY);
+    const offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
+    const offsetY = canvas.height / 2 + ((minY + maxY) / 2) * scale; // flip y for canvas
+
+    function project(i) {
+      const x = positions[i * 3];
+      const y = positions[i * 3 + 1];
+      return [x * scale + offsetX, offsetY - y * scale];
+    }
+
+    ctx.strokeStyle = "#7d7dff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let t = 0; t < indices.length; t += 3) {
+      const [ax, ay] = project(indices[t]);
+      const [bx, by] = project(indices[t + 1]);
+      const [cx, cy] = project(indices[t + 2]);
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      ctx.moveTo(bx, by); ctx.lineTo(cx, cy);
+      ctx.moveTo(cx, cy); ctx.lineTo(ax, ay);
+    }
+    ctx.stroke();
+  }
+
+  async function onGenerate() {
+    generateBtn.disabled = true;
+    clearError();
+    try {
+      if (!initPromise) {
+        initPromise = init({ partPackUrl: PART_PACK_URL, licenseKey: LICENSE_KEY });
+      }
+      await initPromise;
+
+      const dna = {
+        seed: BigInt(Math.floor(Math.random() * 1_000_000_000)),
+        heightModifier: Number(heightSlider.value),
+        weightModifier: Number(weightSlider.value),
+        headId: HEAD_ID,
+        torsoId: TORSO_ID,
+        clothingIds: [],
+      };
+
+      const t0 = performance.now();
+      const result = generate(dna);
+      const t1 = performance.now();
+
+      if (result === null) {
+        const message = getLastError() ?? "generate() returned null with no error message";
+        showError(message);
+        statTime.textContent = `${(t1 - t0).toFixed(2)} ms (failed)`;
+        statVerts.textContent = "—";
+        statIndices.textContent = "—";
+        return;
+      }
+
+      const { positions, indices } = readMesh(result);
+      statTime.textContent = `${(t1 - t0).toFixed(2)} ms`;
+      statVerts.textContent = String(positions.length / 3);
+      statIndices.textContent = String(indices.length);
+      drawWireframe(positions, indices);
+    } catch (err) {
+      showError(`Unexpected error: ${err?.message ?? err}`);
+    } finally {
+      generateBtn.disabled = false;
+    }
+  }
+
+  generateBtn.addEventListener("click", onGenerate);
+</script>
+
+<!--
+  HANDOFF NOTE — HISTORICAL, kept for context
+  ------------------------------------------------------------------
+  Everything below this line was written before the real
+  anthroforge_core.wasm and real_test.afpp were available, when this
+  page genuinely could not be opened. It has since been opened and
+  click-tested for real — see the STATUS comment at the top of this
+  file and PHASE_3_MERGE_NOTES.md for the actual results.
+
+  Original Part C note follows:
+
+  This page has NOT been opened in a browser. It imports from
+  "@anthroforge/web", which does not exist in this task's environment
+  (no packages/web/src, no dist build, and the package is not on the
+  public npm registry — confirmed directly). Without it, this page
+  would fail immediately with a module-resolution error on load, in
+  any browser, right now.
+
+  It also needs a real ANTHROFORGE_LICENSE_KEY (left blank above) to
+  get past init() even once the module exists.
+
+  What's real here: the .afpp path construction points at the actual
+  real_test.afpp file provided with this task, and HEAD_ID/TORSO_ID
+  (2001/1001) are real part ids that do exist in that file (confirmed
+  by directly parsing its container format — see the benchmark
+  script's handoff note for details). Everything else — the exact
+  GeneratedCharacter field names in readMesh(), and which of the two
+  id pairs is really "head" vs "torso" — is my best guess from the
+  task spec and needs confirming against the real SDK source before
+  you trust it.
+
+  Once the real @anthroforge/web is available, this page should be
+  ready to serve and click-test as-is or with minor fixes to
+  readMesh()'s field names.
+-->
+
+</body>
+</html>

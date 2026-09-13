@@ -1,0 +1,197 @@
+[package]
+name = "anthroforge-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Anthroforge Runtime Procedural Character Generation Engine - Rust FFI core"
+
+# `cdylib` produces the dynamic library (`.dll` / `.so` / `.dylib`) that the
+# Unreal Engine C++ plugin loads and binds against via `extern "C"`.
+[lib]
+name = "anthroforge_core"
+# "rlib" added in Phase 9a, additively, alongside the pre-existing
+# "cdylib". The FFI `cdylib` artifact the Unreal plugin loads is
+# unaffected by this — nothing about it changes or is removed.
+#
+# Why: `benches/generate_character_bench.rs` is a separate crate,
+# compiled and linked against this one the normal Cargo-dependency way
+# (`use anthroforge_core::...`), not loaded dynamically the way the
+# Unreal plugin loads the `cdylib` at runtime. A `cdylib`-only crate
+# cannot be linked as a normal Rust dependency by another crate in the
+# same build — verified empirically for Phase 9a: with `crate-type =
+# ["cdylib"]` alone, `cargo bench` failed to compile with
+# `error[E0432]: unresolved import `anthroforge_core``. Adding "rlib" is
+# the standard, additive fix for "I need to also link this crate as a
+# normal Rust dependency for benchmarks/tests" called out in this
+# phase's task spec, and is exactly what was applied here.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Bench-only, off-by-default surface. See lib.rs's
+# `bench_only_build_skin_kdtree` doc comment for what this gates and why:
+# it exists purely so Phase 9a's decimation-stride sweep benchmark can
+# drive `clothing_deformer::build_skin_kdtree` (a `pub(crate)` function,
+# not otherwise reachable from `benches/`) at an explicit stride from
+# outside the crate. Nothing in the default (non-"bench") build is
+# affected — `generate_character`'s own call path still always uses the
+# fixed `SKIN_KDTREE_DECIMATION_STRIDE` constant, unconditionally.
+bench = []
+
+[dependencies]
+# glTF/GLB parsing (buffers, accessors, skins).
+#
+# `default-features = false` + explicit ["utils", "names"] deliberately
+# excludes the crate's `import` feature. `import` bundles image decoding
+# (JPEG/PNG via the `image` crate) purely so `gltf::import()` can also hand
+# back texture pixel data — this phase never touches textures/images, only
+# geometry, so that whole dependency subtree is dead weight we don't want
+# in a runtime-loaded FFI `cdylib`. `Gltf::open`/`from_slice` (JSON + GLB
+# binary-chunk parsing) and the attribute-reading utilities in `utils` are
+# both available without it; this crate does its own minimal buffer-source
+# resolution (see `gltf_loader::load_buffers`) instead of `gltf::import`.
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+
+# Decodes `data:` URI embedded buffers in `.gltf` files (external `.bin`
+# files and embedded-GLB `BIN` chunks need no decoding).
+base64 = "0.21"
+
+# master_skeleton.json (name -> global bone index) deserialization.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# `.obj`/`.mtl` parsing for the fallback loader (static, unskinned modular
+# parts). `single_index = true` at the call site makes it emit one aligned
+# position/normal/texcoord per vertex (matching how `gltf_loader` already
+# treats attributes), so no separate re-indexing pass is needed.
+tobj = "4.0"
+
+# Genuine data-parallelism for the anti-clipping clothing deformer
+# (`fit_clothing_to_skin` fans out per-vertex work with `par_iter_mut()`;
+# `build_cloth_anchors`'s init-time 1-NN pass uses `par_iter()`). NOTE:
+# `clothing_deformer` is compiled into the crate but not yet reachable from
+# any `extern "C"` export — see lib.rs's module doc comment and the Phase 5
+# write-up.
+#
+# Scoped to non-wasm32 targets only, in [target...dependencies] below,
+# rather than listed unconditionally here — clothing_deformer.rs's
+# `cloth_iter!`/`cloth_iter_mut!` macros no longer import or call rayon at
+# all on wasm32 (see that file's Miri/rayon interop note, extended to also
+# cover wasm32), matching the AnthroForge/Web spec's v1 decision to ship
+# single-threaded on that target. Leaving rayon as an unconditional
+# dependency here would still compile the crate into the wasm binary as
+# dead weight even though nothing calls it, working against the spec's
+# <500KB (post-wasm-opt) size budget (section 4.3) for no benefit.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.10"
+
+# Note: GLOBAL_REGISTRY uses std::sync::OnceLock (stable since Rust 1.70),
+# so no separate `once_cell` dependency is required. `texture_atlas` uses
+# only `std` (std::thread::scope, std::panic::catch_unwind).
+
+# `getrandom` is a transitive dependency (tobj -> ahash -> getrandom, per
+# `cargo tree --target wasm32-unknown-unknown -i getrandom`), not something
+# this crate calls directly. On wasm32-unknown-unknown, getrandom 0.3
+# refuses to pick a randomness backend unless told to explicitly, since
+# there's no OS to source entropy from.
+#
+# CHANGED from "wasm_js" to "custom" (Phase 1 feasibility-harness fix):
+# "wasm_js" implements its entropy source using wasm-bindgen internally
+# (confirmed: getrandom 0.3.4 depends on wasm-bindgen 0.2.127 per
+# Cargo.lock), which injects `__wbindgen_*` imports into the compiled
+# .wasm even though nothing in this crate uses `#[wasm_bindgen]` itself.
+# That's fine for a real wasm-bindgen-generated JS host (the spec's
+# eventual production target, section 2/3.2) but breaks a raw
+# `WebAssembly.instantiate` harness with a LinkError, since
+# wasm-bindgen's internal ABI isn't a small, stable surface to hand-stub
+# import-by-import. "custom" avoids pulling in wasm-bindgen at all: this
+# crate defines `__getrandom_v03_custom` itself (see lib.rs) and calls
+# back into the JS host through one plain, explicit `extern "C"` import
+# instead.
+#
+# Revisit if/when the production browser host layer itself adds
+# `#[wasm_bindgen]` exports elsewhere in this crate: at that point,
+# switching back to "wasm_js" costs nothing extra, since the real
+# bindgen-generated glue would already satisfy those imports. Not needed
+# for this Phase 1 feasibility milestone.
+#
+# Scoped to `cfg(target_arch = "wasm32")` only, so the native cdylib build
+# (the existing Unreal plugin target) is completely unaffected — this
+# entry does not exist at all in that build.
+#
+# Also requires passing, at build time (not expressible in Cargo.toml
+# alone): RUSTFLAGS='--cfg getrandom_backend="custom"' — see the new
+# .cargo/config.toml, which sets this so it's checked in rather than
+# something to remember per session.
+#
+# No Cargo feature is needed for "custom" itself — confirmed by the real
+# error `cargo` gives if you add `features = ["custom"]` here: getrandom
+# 0.3.4's `[features]` table only defines `std` and `wasm_js`. Unlike
+# "wasm_js" (which needs extra dependencies — js-sys, wasm-bindgen — so
+# it's gated behind a feature), "custom" needs nothing but the
+# `__getrandom_v03_custom` function this crate already defines (lib.rs)
+# plus the cfg flag selecting it, so it has no feature to enable.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3" }
+
+[[bin]]
+name = "pack_builder"
+path = "src/bin/pack_builder.rs"
+
+[profile.release]
+# Test 03 (panic/abort behavior at the FFI boundary) changed this from
+# `panic = "abort"` to `panic = "unwind"`. Full empirical verification and
+# reasoning is in RESULTS-03.md; summary:
+#
+# - Under the old `panic = "abort"`, an internal panic anywhere in this
+#   crate aborted the process immediately — including inside
+#   `generate_runtime_atlas`, whose `std::panic::catch_unwind` wrapper
+#   (see texture_atlas.rs) exists specifically to turn a panic into a
+#   clean `null` return. `catch_unwind` cannot run under `panic = "abort"`
+#   (the abort happens before any unwinding starts), so that function's
+#   own doc comment was promising a guarantee it could not keep. Verified
+#   empirically: calling the real `extern "C"` entry point through a
+#   C-linked probe binary and triggering an internal panic produced
+#   SIGABRT (exit 134), not a `null` return.
+# - Switching to `panic = "unwind"` makes `catch_unwind` work as intended
+#   for `generate_runtime_atlas`/`free_atlas_buffer` — verified with the
+#   same probe: the same trigger now returns `null` cleanly, exit 0.
+# - `init_part_registry` and `generate_character` do not use
+#   `catch_unwind`. This was audited (see lib.rs module doc comment and
+#   RESULTS-03.md): switching this setting does NOT change their behavior
+#   on an internal panic, because Rust aborts the process whenever a
+#   panic would unwind past a plain `extern "C"` function (not declared
+#   `extern "C-unwind"`) regardless of the crate's panic profile — also
+#   verified empirically with the probe binary. They were never relying
+#   on `panic = "abort"` specifically for correctness, only on this
+#   FFI-unwind guard, which still applies.
+#
+# If this is ever changed back to `"abort"`, `generate_runtime_atlas` and
+# `free_atlas_buffer`'s panic-safety guarantee silently breaks again in
+# release builds — re-run the manual probe in RESULTS-03.md (the in-crate
+# `#[cfg(test)]` regression test alone won't catch this, since `cargo
+# test` does not build with the `[profile.release]` settings).
+panic = "unwind"
+lto = true
+
+[dev-dependencies]
+# Pinned to specific patch versions of criterion's own transitive deps
+# below (via Cargo.lock, not expressed here) purely because this
+# sandbox's available Rust toolchain is 1.75.0 (installed from Ubuntu's
+# apt archive — no internet access to rustup/static.rust-lang.org to get
+# a newer one) and criterion 0.5's default dependency resolution pulls
+# in `clap`/`clap_lex`/`half` versions that require a newer rustc
+# (`edition2024`, "requires rustc 1.81 or newer"). Pinned via `cargo
+# update -p <crate> --precise <version>` to older, rustc-1.75-compatible
+# versions still within each pinned crate's normal semver range that
+# `criterion = "0.5"` already accepts — this is a toolchain-availability
+# workaround for this sandbox, not a statement about what a real CI
+# runner (which would have a current stable rustc) should use. See
+# PHASE_9A_RESULTS.md for the exact pins and why each was needed.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "generate_character_bench"
+harness = false
+# Off by default (see the `bench` feature's doc comment above); run with
+# `cargo bench --features bench`.
+required-features = ["bench"]

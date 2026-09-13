@@ -1,0 +1,27 @@
+{
+  "name": "@anthroforge/web",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=browser --outfile=dist/index.js && tsc --emitDeclarationOnly && node scripts/optimize-wasm.mjs \"${ANTHROFORGE_WASM_SRC:-../../rust-core/target/wasm32-unknown-unknown/release/anthroforge_core.wasm}\" dist/anthroforge_core.wasm",
+    "measure-size": "node scripts/measure-size.mjs"
+  },
+  "devDependencies": {
+    "binaryen": "^123.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}
