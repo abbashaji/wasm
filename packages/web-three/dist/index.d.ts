@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { GeneratedCharacter } from "@anthroforge/web";
+import type { GeneratedCharacter, SkeletonJoint } from "@anthroforge/web";
 /**
  * Converts a `GeneratedCharacter` produced by `@anthroforge/web`'s
  * `generate()` into a `THREE.BufferGeometry`.
@@ -50,3 +50,15 @@ export declare function toBufferGeometry(character: GeneratedCharacter): THREE.B
  * wired into `generate()` upstream.
  */
 export declare function hasAtlas(character: GeneratedCharacter): boolean;
+/**
+ * Converts a `GeneratedCharacter` plus the real `SkeletonJoint[]` returned
+ * by `@anthroforge/web`'s `getSkeleton()` into a real, bound
+ * `THREE.SkinnedMesh` — the follow-up to `toBufferGeometry`'s skinning
+ * limitation (see its doc comment above).
+ *
+ * `skeleton[i]` becomes bone `i`: this ordering is the same global
+ * bone-index space `character.boneIndices` already indexes into (per the
+ * Rust-side `resolve_bone_indices` remap), so the array must not be
+ * reordered, sorted, or filtered.
+ */
+export declare function toSkinnedMesh(character: GeneratedCharacter, skeleton: SkeletonJoint[], material?: THREE.Material): THREE.SkinnedMesh;

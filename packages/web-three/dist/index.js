@@ -14,7 +14,41 @@ function toBufferGeometry(character) {
 function hasAtlas(character) {
   return character.atlasWidth > 0 && character.atlasHeight > 0;
 }
+function toSkinnedMesh(character, skeleton, material) {
+  const geometry = toBufferGeometry(character);
+  const bones = skeleton.map((joint) => {
+    const bone = new THREE.Bone();
+    bone.position.fromArray(joint.translation);
+    bone.quaternion.fromArray(joint.rotation);
+    bone.scale.fromArray(joint.scale);
+    return bone;
+  });
+  const roots = [];
+  skeleton.forEach((joint, i) => {
+    if (joint.parentIndex !== -1) {
+      bones[joint.parentIndex].add(bones[i]);
+    } else {
+      roots.push(bones[i]);
+    }
+  });
+  if (roots.length !== 1) {
+    console.warn(
+      `toSkinnedMesh: expected exactly 1 root bone (parentIndex === -1), found ${roots.length}`
+    );
+  }
+  for (const root of roots) {
+    root.updateMatrixWorld(true);
+  }
+  const skeleton3 = new THREE.Skeleton(bones);
+  const mesh = new THREE.SkinnedMesh(geometry, material);
+  for (const root of roots) {
+    mesh.add(root);
+  }
+  mesh.bind(skeleton3);
+  return mesh;
+}
 export {
   hasAtlas,
-  toBufferGeometry
+  toBufferGeometry,
+  toSkinnedMesh
 };

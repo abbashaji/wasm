@@ -14,6 +14,12 @@ export interface RawMesh {
     boneWeights: Float32Array;
     indices: Uint32Array;
 }
+export interface RawJoint {
+    parentIndex: number;
+    translation: [number, number, number];
+    rotation: [number, number, number, number];
+    scale: [number, number, number];
+}
 export declare class WasmBridge {
     private readonly exports;
     private constructor();
@@ -28,6 +34,15 @@ export declare class WasmBridge {
      */
     generateCharacter(dna: RawCharacterDNA): RawMesh | null;
     private readMeshOutputBuffer;
+    /**
+     * Reads the fully-assembled global skeleton (`master_skeleton.json`'s
+     * bone hierarchy plus every bone's real bind-pose local transform,
+     * contributed across every loaded part) via `get_skeleton`. This data is
+     * read-only, global, and per-process — unlike `generateCharacter`'s
+     * per-call output — so call this once after `initPartRegistryFromPack`
+     * succeeds, not once per generated character.
+     */
+    getSkeleton(): RawJoint[] | null;
     /**
      * Reads and copies out the last error string recorded by the module.
      * Per the ABI contract this must be read before any further call into the

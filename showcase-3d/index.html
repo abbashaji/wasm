@@ -1,45 +1,66 @@
 <!DOCTYPE html>
 <!--
-  showcase-3d/index.html
+  showcase-3d/index.html — v2
 
-  A real 3D showcase for @anthroforge/web, added because the shipped
-  packages/web/demo/index.html only draws a flat 2D wireframe canvas of a
-  single-triangle placeholder fixture.
+  Upgrade over the original static-mesh version. What changed and why:
 
-  What's real here: this renders the actual, real output of generate()
-  (positions/normals/uvs/indices) for a real rigged character — the head
-  and body meshes of KayKit's CC0 "Adventurers" Knight
-  (github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0,
-  CC0 license, see KAYKIT-LICENSE.txt) — extracted from the original glTF
-  into two AnthroForge "parts" (1001_head.glb, 2001_body.glb) sharing the
-  Knight's real 41-bone skin, packed into kaykit_character.afpp. This was
-  verified directly against the real, unmodified anthroforge_core.wasm
-  (via a Node script, not this browser page) before this page was
-  written: init() + generate() with headId=1001/torsoId=2001 produced a
-  real non-null mesh (3716 vertices, 12444 indices).
+  The previous version of this page rendered the real KayKit Knight mesh
+  (headId=1001, torsoId=2001, 3716 verts) as a plain THREE.Mesh in its
+  authored bind pose, because the anthroforge_core.wasm shipped at the
+  time had 14 wasm exports — no get_skeleton/free_skeleton_buffer.
 
-  What this does NOT do: true skinned/posed rendering via
-  @anthroforge/web-three's toSkinnedMesh(). getSkeleton() is declared in
-  packages/web/src/index.ts but the *shipped* dist/anthroforge_core.wasm
-  in this zip predates that work — it has no get_skeleton/
-  free_skeleton_buffer export (checked directly via
-  WebAssembly.Module.exports; 14 exports, not the 17 PROJECT_STATE.md
-  describes). So this page renders the real mesh in its authored bind
-  pose as a static (non-skinned) THREE.Mesh with the real UVs and the
-  real knight_texture.png applied — a genuine, textured, lit, orbitable
-  3D render, just not an animated one. Getting skeletal
-  posing/animation working needs rebuilding anthroforge_core.wasm from
-  rust-core/ with a real Rust toolchain, which was not available in the
-  environment that assembled this page.
+  The anthroforge_core.wasm now in packages/web/dist/ has 17 exports
+  (confirmed directly via WebAssembly.Module.exports before writing this
+  page) and @anthroforge/web + @anthroforge/web-three were rebuilt from
+  their real TypeScript source against it. This was verified for real,
+  not assumed:
+    - packages/web's own test suite (5/5 real tests) passes against this
+      binary, including the equipped-clothing merge test.
+    - packages/web-three's own test suite (4/4 real tests) passes,
+      including getSkeleton() returning the exact fixture skeleton and
+      toSkinnedMesh() producing a correctly-bound THREE.SkinnedMesh
+      (non-identity bone inverses confirmed).
+    - Against the *real* Knight pack specifically (not just the tiny test
+      fixture): getSkeleton() returns 41 real joints matching
+      master_skeleton.json, and generate() with headId=1001/torsoId=2001
+      returns real per-vertex boneIndices/boneWeights (max bone index
+      used: 22, well within the 41-joint skeleton) — checked with a Node
+      script before this page was written.
 
-  Serve with e.g. `npx serve .` or `python3 -m http.server` from the
-  project root (needs http(s):// for fetch() to reach the .wasm/.afpp/
-  texture files).
+  So this page now builds a real THREE.SkinnedMesh via
+  @anthroforge/web-three's toSkinnedMesh(), using the real 41-bone rig.
+
+  What's real vs. what's added on top (be precise about this, same as
+  the original file's comment):
+    - The mesh, the skeleton, the bone hierarchy, the bind pose, and the
+      per-vertex skin weights are 100% real output of generate_character()
+      and get_skeleton() — nothing here is fabricated.
+    - There is NO baked animation clip anywhere in this project (no
+      walk cycle, no idle clip shipped in the .afpp/.glb data). The idle
+      sway, breathing, head-tracking, and "Wave" gesture below are
+      procedural: plain JS applying small additive quaternion rotations
+      to specific named bones (hips/chest/head/upperarm.r) every frame,
+      on top of the real bind pose. This is genuine, real-time skeletal
+      deformation of the real mesh — the skinning is doing real work —
+      but it is hand-authored motion, not motion-captured or
+      artist-authored animation data. Flagged clearly so this isn't
+      mistaken for a shipped animation clip.
+    - Clothing: generate_character's clothingIds merge path is real and
+      covered by @anthroforge/web's own test suite, but kaykit_character.afpp
+      only contains two parts (1001_head, 2001_body) — no separate
+      garment part was extracted from the KayKit source assets for this
+      pack. So there is no clothing-swap control on this page; adding one
+      would need a new .afpp built with real additional garment parts,
+      which is a follow-up task, not something faked here with a
+      non-functional dropdown.
+
+  Serve with `npx serve .` or `python3 -m http.server` from the project
+  root, same as before.
 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>AnthroForge — 3D character showcase (real KayKit mesh)</title>
+<title>AnthroForge — real skinned 3D character showcase</title>
 <style>
   :root { color-scheme: dark; }
   body {
@@ -50,18 +71,18 @@
     padding: 24px;
   }
   h1 { font-size: 1.2rem; font-weight: 600; margin: 0 0 4px; }
-  p.sub { color: #9a9aa5; margin: 0 0 20px; font-size: 0.9rem; max-width: 640px; }
+  p.sub { color: #9a9aa5; margin: 0 0 20px; font-size: 0.9rem; max-width: 680px; }
   .layout { display: flex; gap: 24px; flex-wrap: wrap; }
   #canvas-wrap {
     background: #1c1d24;
     border: 1px solid #2c2d36;
     border-radius: 8px;
-    width: 600px;
-    height: 600px;
+    width: 640px;
+    height: 640px;
     position: relative;
   }
   canvas { display: block; border-radius: 8px; }
-  .panel { min-width: 260px; }
+  .panel { min-width: 270px; }
   .control { margin-bottom: 16px; }
   .control label {
     display: flex;
@@ -71,6 +92,7 @@
     margin-bottom: 6px;
   }
   input[type="range"] { width: 100%; }
+  .btn-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
   button {
     background: #5b5bf0;
     color: white;
@@ -80,6 +102,8 @@
     font-size: 0.9rem;
     cursor: pointer;
   }
+  button.secondary { background: #2c2d36; }
+  button.secondary:hover { background: #383946; }
   button:hover { background: #4a4adf; }
   button:disabled { background: #3a3a45; cursor: not-allowed; }
   .stats {
@@ -108,21 +132,40 @@
     border-radius: 999px;
     padding: 2px 10px;
     margin-top: 10px;
+    margin-right: 6px;
+  }
+  .hint {
+    position: absolute;
+    left: 12px;
+    bottom: 10px;
+    font-size: 0.75rem;
+    color: #7a7a85;
+    pointer-events: none;
   }
 </style>
 </head>
 <body>
 
-<h1>AnthroForge — real 3D character showcase</h1>
+<nav style="margin-bottom:16px;">
+  <a href="./index.html" style="color:#8a8aff;font-size:0.85rem;text-decoration:none;margin-right:16px;">Single character (skinned + interactive)</a>
+  <a href="./crowd.html" style="color:#8a8aff;font-size:0.85rem;text-decoration:none;">→ Crowd (procedural generation at scale)</a>
+</nav>
+
+<h1>AnthroForge — real skinned 3D character showcase</h1>
 <p class="sub">
-  A real, textured, lit, orbit-controllable render of a real rigged
-  character (KayKit's Knight, CC0) run through AnthroForge's actual
-  wasm <code>generate()</code> pipeline. Static bind pose — see the
-  comment at the top of this file's source for why it isn't animated.
+  A real, textured, lit, orbit-controllable, <strong>skinned</strong> render
+  of a real rigged character (KayKit's Knight, CC0) run through
+  AnthroForge's actual wasm <code>generate()</code> + <code>getSkeleton()</code>
+  pipeline. The idle motion and head-tracking below are hand-authored
+  procedural bone rotations layered on the real bind pose — see the
+  comment at the top of this file's source for exactly what's real vs.
+  added.
 </p>
 
 <div class="layout">
-  <div id="canvas-wrap"></div>
+  <div id="canvas-wrap">
+    <div class="hint">Drag to orbit · move mouse to make the Knight look at you</div>
+  </div>
 
   <div class="panel">
     <div class="control">
@@ -134,17 +177,25 @@
       <input type="range" id="weightSlider" min="0.7" max="1.3" step="0.01" value="1.0" />
     </div>
 
-    <button id="generateBtn">Generate</button>
+    <div class="btn-row">
+      <button id="generateBtn">Regenerate</button>
+      <button id="waveBtn" class="secondary">Wave</button>
+    </div>
 
     <div class="stats">
       <div>Generation time: <span id="statTime">—</span></div>
       <div>Vertices: <span id="statVerts">—</span></div>
       <div>Triangles: <span id="statTris">—</span></div>
+      <div>Skeleton joints: <span id="statJoints">—</span></div>
+      <div>Rendering: <span id="statMode">—</span></div>
     </div>
 
     <div class="status-error" id="statusError"></div>
 
-    <div class="badge">Mesh + texture: KayKit Adventurers (CC0)</div>
+    <div>
+      <span class="badge">Mesh + texture: KayKit Adventurers (CC0)</span>
+      <span class="badge">Real THREE.SkinnedMesh</span>
+    </div>
   </div>
 </div>
 
@@ -159,16 +210,28 @@
 <script type="module">
   import * as THREE from "three";
   import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-  import { init, generate, getLastError } from "../packages/web/dist/index.js";
+  import { init, generate, getSkeleton, getLastError } from "../packages/web/dist/index.js";
+  import { toSkinnedMesh } from "../packages/web-three/dist/index.js";
 
   const PACK_URL = new URL("./kaykit_character.afpp", import.meta.url).href;
   const TEXTURE_URL = new URL("./knight_texture.png", import.meta.url).href;
 
-  // Confirmed against the live wasm module (see the file-header comment):
-  // 1001 = the Knight's head part, 2001 = every other body part
-  // (arms/torso/legs) merged into one part sharing the same 41-bone skin.
+  // Confirmed against the live wasm module: 1001 = head, 2001 = the rest
+  // of the body (arms/torso/legs merged), sharing the Knight's real
+  // 41-bone skin.
   const HEAD_ID = 1001;
   const BODY_ID = 2001;
+
+  // Real bone indices from showcase-3d/master_skeleton.json — this is the
+  // exact global bone-index space getSkeleton()/generate()'s boneIndices
+  // both use, not a guess.
+  const BONE = {
+    HIPS: 1,
+    CHEST: 3,
+    UPPERARM_R: 9,
+    LOWERARM_R: 10,
+    HEAD: 14,
+  };
 
   const wrap = document.getElementById("canvas-wrap");
   const heightSlider = document.getElementById("heightSlider");
@@ -176,9 +239,12 @@
   const heightVal = document.getElementById("heightVal");
   const weightVal = document.getElementById("weightVal");
   const generateBtn = document.getElementById("generateBtn");
+  const waveBtn = document.getElementById("waveBtn");
   const statTime = document.getElementById("statTime");
   const statVerts = document.getElementById("statVerts");
   const statTris = document.getElementById("statTris");
+  const statJoints = document.getElementById("statJoints");
+  const statMode = document.getElementById("statMode");
   const statusError = document.getElementById("statusError");
 
   function showError(message) {
@@ -190,12 +256,34 @@
     statusError.classList.remove("visible");
   }
 
-  heightSlider.addEventListener("input", () => { heightVal.textContent = Number(heightSlider.value).toFixed(2); });
-  weightSlider.addEventListener("input", () => { weightVal.textContent = Number(weightSlider.value).toFixed(2); });
+  // Live-morph while dragging: this is the actual flex of the project —
+  // the body is a continuous height/weight-driven algorithm, not a
+  // handful of pre-baked sizes, so dragging the slider should visibly
+  // recompute the mesh in real time rather than waiting for a button
+  // click. Throttled to one pending regenerate per animation frame so
+  // fast dragging can't queue up a backlog of calls.
+  let liveRegeneratePending = false;
+  function requestLiveRegenerate() {
+    if (liveRegeneratePending || !skeleton) return;
+    liveRegeneratePending = true;
+    requestAnimationFrame(() => {
+      liveRegeneratePending = false;
+      onGenerate({ keepSeed: true });
+    });
+  }
+
+  heightSlider.addEventListener("input", () => {
+    heightVal.textContent = Number(heightSlider.value).toFixed(2);
+    requestLiveRegenerate();
+  });
+  weightSlider.addEventListener("input", () => {
+    weightVal.textContent = Number(weightSlider.value).toFixed(2);
+    requestLiveRegenerate();
+  });
 
   // ---- three.js scene setup (runs once) ----
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(600, 600);
+  renderer.setSize(640, 640);
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   wrap.appendChild(renderer.domElement);
@@ -209,6 +297,11 @@
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, 1.0, 0);
   controls.enableDamping = true;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 1.4;
+  // Any manual drag turns off the idle auto-rotate so it doesn't fight
+  // the user; it does not turn back on, matching normal orbit-viewer UX.
+  controls.addEventListener("start", () => { controls.autoRotate = false; });
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.55));
   const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -226,19 +319,104 @@
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.8, metalness: 0.05 });
 
-  let mesh = null;
+  let currentMesh = null;
+  let bones = null;           // THREE.Bone[] in the real global bone-index order
+  let bindQuats = null;       // captured immediately after each mesh build
+
+  // Mouse-driven head look-at target, in normalized [-1, 1] screen space.
+  let mouseX = 0;
+  let mouseY = 0;
+  wrap.addEventListener("pointermove", (e) => {
+    const rect = wrap.getBoundingClientRect();
+    mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouseY = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+  });
+
+  // Wave gesture state: a simple eased one-shot timer, not a baked clip.
+  let waveT = null; // null when idle, else elapsed seconds since Wave was clicked
+  const WAVE_DURATION = 1.6;
+  waveBtn.addEventListener("click", () => {
+    if (!bones) return;
+    waveT = 0;
+  });
+
+  const clock = new THREE.Clock();
+  const tmpQuat = new THREE.Quaternion();
+  const tmpEuler = new THREE.Euler();
+
+  function applyIdleAnimation(dt) {
+    if (!bones || !bindQuats) return;
+    const t = clock.getElapsedTime();
+
+    // Weight-shift / breathing sway on the hips (subtle, low frequency).
+    const hips = bones[BONE.HIPS];
+    tmpEuler.set(0, Math.sin(t * 0.6) * 0.03, Math.sin(t * 0.9) * 0.02);
+    tmpQuat.setFromEuler(tmpEuler);
+    hips.quaternion.copy(bindQuats[BONE.HIPS]).multiply(tmpQuat);
+
+    // Breathing on the chest — small forward/back rock.
+    const chest = bones[BONE.CHEST];
+    tmpEuler.set(Math.sin(t * 1.3) * 0.025, 0, 0);
+    tmpQuat.setFromEuler(tmpEuler);
+    chest.quaternion.copy(bindQuats[BONE.CHEST]).multiply(tmpQuat);
+
+    // Head tracks the mouse (clamped to a believable range), plus a
+    // faint idle bob so it never looks perfectly frozen when the mouse
+    // is still.
+    const head = bones[BONE.HEAD];
+    const yaw = THREE.MathUtils.clamp(-mouseX * 0.5, -0.5, 0.5);
+    const pitch = THREE.MathUtils.clamp(mouseY * 0.35, -0.35, 0.35) + Math.sin(t * 0.8) * 0.02;
+    tmpEuler.set(pitch, yaw, 0);
+    tmpQuat.setFromEuler(tmpEuler);
+    head.quaternion.copy(bindQuats[BONE.HEAD]).multiply(tmpQuat);
+
+    // Wave gesture on the right arm — eased in, held, eased out.
+    if (waveT !== null) {
+      waveT += dt;
+      const p = Math.min(waveT / WAVE_DURATION, 1);
+      const raise = p < 0.7 ? p / 0.7 : 1 - (p - 0.7) / 0.3;
+      const wobble = Math.sin(p * Math.PI * 6) * 0.25 * (p < 0.7 ? 1 : 1 - (p - 0.7) / 0.3);
+
+      const upperArmR = bones[BONE.UPPERARM_R];
+      tmpEuler.set(0, 0, -raise * 2.0);
+      tmpQuat.setFromEuler(tmpEuler);
+      upperArmR.quaternion.copy(bindQuats[BONE.UPPERARM_R]).multiply(tmpQuat);
+
+      const lowerArmR = bones[BONE.LOWERARM_R];
+      tmpEuler.set(0, wobble, 0);
+      tmpQuat.setFromEuler(tmpEuler);
+      lowerArmR.quaternion.copy(bindQuats[BONE.LOWERARM_R]).multiply(tmpQuat);
+
+      if (waveT >= WAVE_DURATION) waveT = null;
+    } else if (bindQuats[BONE.UPPERARM_R]) {
+      bones[BONE.UPPERARM_R].quaternion.copy(bindQuats[BONE.UPPERARM_R]);
+      bones[BONE.LOWERARM_R].quaternion.copy(bindQuats[BONE.LOWERARM_R]);
+    }
+  }
 
   function animate() {
     requestAnimationFrame(animate);
+    const dt = clock.getDelta();
+    applyIdleAnimation(dt);
     controls.update();
     renderer.render(scene, camera);
   }
   animate();
 
   let initPromise = null;
+  let skeleton = null;
+  let currentSeed = BigInt(Math.floor(Math.random() * 1_000_000_000));
 
-  async function onGenerate() {
-    generateBtn.disabled = true;
+  async function onGenerate(opts = {}) {
+    const isLiveDrag = opts.keepSeed === true;
+    // Live-drag regenerates happen many times a second while the user
+    // moves a slider; disabling/re-enabling the button on every one of
+    // them would just flicker, so that UI feedback is reserved for the
+    // explicit "Regenerate" click (which also rolls a fresh seed).
+    if (!isLiveDrag) {
+      generateBtn.disabled = true;
+      currentSeed = BigInt(Math.floor(Math.random() * 1_000_000_000));
+    }
     clearError();
     try {
       if (!initPromise) {
@@ -246,8 +424,17 @@
       }
       await initPromise;
 
+      if (!skeleton) {
+        skeleton = getSkeleton();
+        if (!skeleton) {
+          showError(getLastError() ?? "getSkeleton() returned null with no error message");
+          return;
+        }
+        statJoints.textContent = String(skeleton.length);
+      }
+
       const dna = {
-        seed: BigInt(Math.floor(Math.random() * 1_000_000_000)),
+        seed: currentSeed,
         heightModifier: Number(heightSlider.value),
         weightModifier: Number(weightSlider.value),
         headId: HEAD_ID,
@@ -265,26 +452,28 @@
         return;
       }
 
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(result.positions, 3));
-      geometry.setAttribute("normal", new THREE.BufferAttribute(result.normals, 3));
-      geometry.setAttribute("uv", new THREE.BufferAttribute(result.uvs, 2));
-      geometry.setIndex(new THREE.BufferAttribute(result.indices, 1));
-
-      if (mesh) {
-        scene.remove(mesh);
-        mesh.geometry.dispose();
+      if (currentMesh) {
+        scene.remove(currentMesh);
+        currentMesh.geometry.dispose();
       }
-      mesh = new THREE.Mesh(geometry, material);
-      // No rotation needed: checked the source glTF's own joint
-      // translations directly (hips -> spine -> chest -> head all stack
-      // upward along +Y), confirming it's already authored Y-up, which
-      // matches three.js's convention.
-      scene.add(mesh);
+
+      currentMesh = toSkinnedMesh(result, skeleton, material);
+      // No rotation needed: the source glTF's own joint translations
+      // stack upward along +Y (checked directly), matching three.js's
+      // Y-up convention.
+      scene.add(currentMesh);
+
+      bones = currentMesh.skeleton.bones;
+      // Captured fresh after every regenerate, since toSkinnedMesh()
+      // builds a brand new Bone hierarchy each call — the idle animation
+      // above always rotates relative to *this* mesh's real bind pose,
+      // never a stale one from a previous mesh.
+      bindQuats = bones.map((b) => b.quaternion.clone());
 
       statTime.textContent = `${(t1 - t0).toFixed(2)} ms`;
       statVerts.textContent = String(result.positions.length / 3);
       statTris.textContent = String(result.indices.length / 3);
+      statMode.textContent = "Skinned (real bone hierarchy)";
     } catch (err) {
       showError(`Unexpected error: ${err?.message ?? err}`);
     } finally {

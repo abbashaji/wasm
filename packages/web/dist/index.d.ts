@@ -53,6 +53,12 @@ export interface InitOptions {
     partPackUrl: string;
     licenseKey: string;
 }
+export interface SkeletonJoint {
+    parentIndex: number;
+    translation: [number, number, number];
+    rotation: [number, number, number, number];
+    scale: [number, number, number];
+}
 /**
  * Loads the SDK's own bundled wasm module (shipped as a sibling file to
  * this package's built JS — not fetched from a caller-supplied URL) and
@@ -67,6 +73,15 @@ export declare function init(options: InitOptions): Promise<void>;
  */
 export declare function generate(dna: CharacterDNA): GeneratedCharacter | null;
 export declare function getLastError(): string | null;
+/**
+ * Returns the fully-assembled global skeleton (`master_skeleton.json`'s
+ * bone hierarchy plus every bone's real bind-pose local transform,
+ * contributed across every loaded part), or `null` on failure (call
+ * `getLastError()` for details). This data is read-only, global, and
+ * per-process — unlike `generate()`'s per-call output — so call this once
+ * after `init()` succeeds, not once per generated character.
+ */
+export declare function getSkeleton(): SkeletonJoint[] | null;
 /**
  * No-op: `generate()` already copies all mesh data out of wasm linear
  * memory into fresh JS typed arrays and immediately calls

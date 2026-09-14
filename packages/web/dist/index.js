@@ -130,6 +130,44 @@ var WasmBridge = class _WasmBridge {
     return { positions, normals, uvs, boneIndices, boneWeights, indices };
   }
   /**
+   * Reads the fully-assembled global skeleton (`master_skeleton.json`'s
+   * bone hierarchy plus every bone's real bind-pose local transform,
+   * contributed across every loaded part) via `get_skeleton`. This data is
+   * read-only, global, and per-process — unlike `generateCharacter`'s
+   * per-call output — so call this once after `initPartRegistryFromPack`
+   * succeeds, not once per generated character.
+   */
+  getSkeleton() {
+    const ptr = this.exports.get_skeleton();
+    if (ptr === 0) {
+      return null;
+    }
+    try {
+      const headerView = new DataView(this.exports.memory.buffer, ptr, 8);
+      const jointsPtr = headerView.getUint32(0, true);
+      const jointCount = headerView.getUint32(4, true);
+      const joints = [];
+      for (let i = 0; i < jointCount; i++) {
+        const base = jointsPtr + i * 44;
+        const v = new DataView(this.exports.memory.buffer, base, 44);
+        joints.push({
+          parentIndex: v.getInt32(0, true),
+          translation: [v.getFloat32(4, true), v.getFloat32(8, true), v.getFloat32(12, true)],
+          rotation: [
+            v.getFloat32(16, true),
+            v.getFloat32(20, true),
+            v.getFloat32(24, true),
+            v.getFloat32(28, true)
+          ],
+          scale: [v.getFloat32(32, true), v.getFloat32(36, true), v.getFloat32(40, true)]
+        });
+      }
+      return joints;
+    } finally {
+      this.exports.free_skeleton_buffer(ptr);
+    }
+  }
+  /**
    * Reads and copies out the last error string recorded by the module.
    * Per the ABI contract this must be read before any further call into the
    * module, since the string is only valid until the next call.
@@ -217,11 +255,15 @@ function generate(dna) {
 function getLastError() {
   return requireBridge().getLastError();
 }
+function getSkeleton() {
+  return requireBridge().getSkeleton();
+}
 function freeCharacter(_character) {
 }
 export {
   freeCharacter,
   generate,
   getLastError,
+  getSkeleton,
   init
 };
